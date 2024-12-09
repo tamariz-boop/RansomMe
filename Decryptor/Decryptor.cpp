@@ -9,6 +9,16 @@
 
 #define CHUNK_SIZE 4096
 
+// I had to build my own strcat function to handle with the runtime exception thrown when
+//      appending a string to a big enough string and overflowing the MaxSize
+errno_t my_strcat_s(char* destinationStr, size_t MaxSize, const char* sourceStr) {
+    if (strlen(destinationStr) + strlen(sourceStr) > MaxSize) {
+        return -1;
+    }
+    else {
+        return strcat_s(destinationStr, MaxSize, sourceStr);
+    }
+}
 
 HCRYPTKEY LoadKeyFromFile(HCRYPTPROV hCryptProv, const char* keyFileName) {
     HCRYPTKEY hKey = 0;     // the handler to the key
@@ -111,7 +121,8 @@ BOOL DecryptFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY
     }
 
     success = TRUE;
-    printf("File decrypted successfully.\n");
+//    printf("\rFile %s decrypted successfully.", inputFileName);
+//    fflush(stdout);
 
 cleanup:
     if (hInputFile != INVALID_HANDLE_VALUE) CloseHandle(hInputFile);
@@ -137,11 +148,17 @@ size_t DecryptAllFiles(char* targetDir, const char* cryptoFileExt, HCRYPTKEY hKe
 
     // if targetDir does not end with \ we will add it as it will be more convinient later
     if (targetDir[strlen(targetDir)] != '\\') {
-        strcat_s(targetDir, MAX_PATH, "\\");
+        if (my_strcat_s(targetDir, MAX_PATH, "\\") != 0) {
+            printf("Skipping directory %s. Cannot append '\\'. Name might be too long.\n", targetDir);
+            return fileCount;
+        }
     }
     // creating a copy of the dir and adding * to the end to pass it to the FindFirstFile function
     strcpy_s(findTargetDir, MAX_PATH, targetDir);
-    strcat_s(findTargetDir, MAX_PATH, "*");
+    if (my_strcat_s(findTargetDir, MAX_PATH, "*") != 0) {
+        printf("Skipping directory %s. Cannot append '*'. Name might be too long.\n", targetDir);
+        return fileCount;
+    }
 
     // Find the first file in the directory.
     hFind = FindFirstFileA(findTargetDir, &foundFileData);
@@ -160,19 +177,26 @@ size_t DecryptAllFiles(char* targetDir, const char* cryptoFileExt, HCRYPTKEY hKe
             }
             // If it's a directory, append the folder name to the original target dir
             strcpy_s(targetSubDir, MAX_PATH, targetDir);
-            strcat_s(targetSubDir, MAX_PATH, foundFileData.cFileName);
+            if (my_strcat_s(targetSubDir, MAX_PATH, foundFileData.cFileName) != 0) {
+                printf("Skipping directory %s. Cannot append subdir %s. Name might be too long.\n", targetDir, foundFileData.cFileName);
+                continue;
+            }
 
             // recursively call with every subfolder and add the number to the total files
             fileCount += DecryptAllFiles(targetSubDir, cryptoFileExt, hKey);
         }
         else {
-            // If it's a file, encrypt it
+            // If it's a file, decrypt it
             // let's create the full file name (with the full path)
             strcpy_s(fullFileName, MAX_PATH, targetDir);
-            strcat_s(fullFileName, MAX_PATH, foundFileData.cFileName);
-            // now encrypt the file
-            DecryptFile(fullFileName, cryptoFileExt, hKey);
-            fileCount++;        // let's count the number of encrypted files, why no?
+            if (my_strcat_s(fullFileName, MAX_PATH, foundFileData.cFileName) != 0) {
+                printf("Skipping file %s in dir %s. Name might be too long.\n", foundFileData.cFileName, targetDir);
+                continue;
+            }
+            // now decrypt the file
+            if (DecryptFile(fullFileName, cryptoFileExt, hKey)) {
+                fileCount++;        // let's count the number of decrypted files, why no?
+            }
         }
     } while (FindNextFileA(hFind, &foundFileData) != 0);
 
@@ -182,12 +206,23 @@ size_t DecryptAllFiles(char* targetDir, const char* cryptoFileExt, HCRYPTKEY hKe
 }
 
 int main() {
-//    char inputFileName[MAX_PATH] = "C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\akg.txt.enc";
-//    char inputFileName[MAX_PATH] = "C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\test.txt.enc";
     char targetDir[MAX_PATH] = "C:\\Users\\Tamariz\\Desktop\\Test";
+//    char inputFileName[MAX_PATH] = "C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\test.txt.enc";
+//    char targetDir[MAX_PATH] = "C:\\Users\\Tamariz\\Desktop\\Test";
     const char* cryptoFileExt = ".enc";
     const char* keyFile = "C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\key.bin";
     size_t fileNumber = 0;      // number of encrypted files
+
+    //-------------------------------------------
+    //     TIME
+    FILETIME startTime, endTime;
+    ULARGE_INTEGER start, end;
+
+    // Get the start time
+    GetSystemTimeAsFileTime(&startTime);
+    start.LowPart = startTime.dwLowDateTime;
+    start.HighPart = startTime.dwHighDateTime;
+    //----------------------------------------------
 
     /*** Initialize the crypto environment. Acquire context and generate a key ***/
     HCRYPTPROV hCryptProv = 0;
@@ -205,7 +240,7 @@ int main() {
 //    DecryptFile(inputFileName, cryptoFileExt, hKey);
     // decrypt a file
     fileNumber = DecryptAllFiles(targetDir, cryptoFileExt, hKey);
-    printf("%d files decrypted.\n", fileNumber);
+    printf("%zd files decrypted.\n", fileNumber);
 
     /*** Release the crypt handlers ***/
     // Release the session key. 
@@ -220,6 +255,16 @@ int main() {
             printf("Error during CryptReleaseContext!. Error code: %lu\n", GetLastError());
         }
     }
+
+    // Get the end time
+    GetSystemTimeAsFileTime(&endTime);
+    end.LowPart = endTime.dwLowDateTime;
+    end.HighPart = endTime.dwHighDateTime;
+
+    // Calculate the elapsed time in milliseconds
+    ULONGLONG elapsedMilliseconds = (end.QuadPart - start.QuadPart) / 10000;
+
+    printf("Elapsed Time: %llu milliseconds\n", elapsedMilliseconds);
 
     return 0;
 }
