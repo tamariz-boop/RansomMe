@@ -70,7 +70,7 @@ HCRYPTKEY LoadKeyFromFile(HCRYPTPROV hCryptProv, const char* keyFileName) {
     return hKey;
 }
 
-BOOL DecryptFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey) {
+BOOL DecryptMyFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey) {
     HANDLE hInputFile = INVALID_HANDLE_VALUE;                   // input file handler
     HANDLE hOutputFile = INVALID_HANDLE_VALUE;                  // output file handler
 
@@ -194,7 +194,7 @@ size_t DecryptAllFiles(char* targetDir, const char* cryptoFileExt, HCRYPTKEY hKe
                 continue;
             }
             // now decrypt the file
-            if (DecryptFile(fullFileName, cryptoFileExt, hKey)) {
+            if (DecryptMyFile(fullFileName, cryptoFileExt, hKey)) {
                 fileCount++;        // let's count the number of decrypted files, why no?
             }
         }
@@ -237,7 +237,7 @@ int main() {
     // load the key from a file
     hKey = LoadKeyFromFile(hCryptProv, keyFile);
 
-    //    DecryptFile(inputFileName, cryptoFileExt, hKey);
+    //    DecryptMyFile(inputFileName, cryptoFileExt, hKey);
         // decrypt a file
     fileNumber = DecryptAllFiles(targetDir, cryptoFileExt, hKey);
     printf("%zd files decrypted.\n", fileNumber);

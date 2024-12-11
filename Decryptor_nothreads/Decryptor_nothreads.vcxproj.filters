@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Decryptor_nothreads.cpp">
+    <ClCompile Include="Decryptor_nothreads.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

