@@ -22,20 +22,77 @@ typedef struct {
 } FileDecryptTask;
 
 
-// Declairing the DecryptMyFile function to use it in the FileDecryptWorker callback function
-BOOL DecryptMyFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey);
-
 // The callback function to be called by CreateThreadpoolWork when a new work sent to the pool
 VOID CALLBACK FileDecryptWorker(PTP_CALLBACK_INSTANCE instance, PVOID parameter, PTP_WORK work) {
     UNREFERENCED_PARAMETER(instance);                               // instance will not be used
     UNREFERENCED_PARAMETER(work);                                   // work will not be used
     FileDecryptTask* taskParam = (FileDecryptTask*)parameter;       // taskParam will point to the FileDecryptTask struct
 
-    // Call DecryptMyFile with the file name, extension and encryption key
-    if (DecryptMyFile(taskParam->filePath, taskParam->cryptoFileExt, taskParam->hKey)) {
-        taskParam->success = TRUE;          // only if the decryption succeeded
+    //--------------- the decryptmyfile code
+    HANDLE hInputFile = INVALID_HANDLE_VALUE;                           // input file handler
+    HANDLE hOutputFile = INVALID_HANDLE_VALUE;                          // output file handler
+
+    BYTE buffer[CHUNK_SIZE];                                            // buffer to read from file, decrypt and write into file
+    DWORD bytesRead = 0, bytesWritten = 0;                              // number of bytes read/written return by CreateFile and CryptDecrypt
+    BOOL finalChunk = FALSE;                                            // flag to tell CryptDecrypt that it is the final chunk (smaller than the rest)
+
+    char outputFileName[MAX_PATH] = "";                                 // output file name
+    const char* inputFileExt = strrchr(taskParam->filePath, '.');       // this will point to the last '.' of taskParam->filePath, where the crypted extension begins
+
+    // if the input file does not contain the crypted extension, skip the decryption
+    if (strcmp(inputFileExt, taskParam->cryptoFileExt)) { goto cleanup; }
+    else {
+        // The outputFileName will be the inputFileName without the cryptoFileExt
+        strncpy(outputFileName, taskParam->filePath, inputFileExt - taskParam->filePath);
+
+        // Open the input file
+        hInputFile = CreateFileA(taskParam->filePath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hInputFile == INVALID_HANDLE_VALUE) {
+            printf("Error: Could not open input file. Error Code: %lu\n", GetLastError());
+            goto cleanup;
+        }
+
+        // Open the output file
+        hOutputFile = CreateFileA(outputFileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hOutputFile == INVALID_HANDLE_VALUE) {
+            printf("Error: Could not open output file. Error Code: %lu\n", GetLastError());
+            goto cleanup;
+        }
+
+        // Decrypt and write the file data in chunks
+        while (ReadFile(hInputFile, buffer, CHUNK_SIZE, &bytesRead, NULL) && bytesRead > 0) {
+            finalChunk = (bytesRead < CHUNK_SIZE);  // the final chunk will be smaller thant CHUNK_SIZE
+
+            // Decrypt the chunk
+            if (!CryptDecrypt(taskParam->hKey, 0, finalChunk, 0, buffer, &bytesRead)) {
+                printf("Error: CryptDecrypt failed. Error Code: %lu\n", GetLastError());
+                goto cleanup;
+            }
+
+            // Write the decrypted chunk to the output file
+            if (!WriteFile(hOutputFile, buffer, bytesRead, &bytesWritten, NULL) || bytesWritten != bytesRead) {
+                printf("Error: WriteFile failed. Error Code: %lu\n", GetLastError());
+                goto cleanup;
+            }
+        }
     }
 
+    // set success to true because the decryption went ok
+    taskParam->success = TRUE;
+    //    printf("\rFile %s decrypted successfully.", inputFileName);
+    //    fflush(stdout);
+
+cleanup:
+    if (hInputFile != INVALID_HANDLE_VALUE) CloseHandle(hInputFile);
+    if (hOutputFile != INVALID_HANDLE_VALUE) CloseHandle(hOutputFile);
+
+    // Delete the input file only if the decryption was successful
+    if (taskParam->success == TRUE) {
+        if (!DeleteFileA(taskParam->filePath)) {
+            printf("Error: Could not delete input file. Error Code: %lu\n", GetLastError());
+        }
+    }
+// ------------------------------------------------------
     taskParam->filePath[0] = '\0';          // clear the file name (this is optional)
     SetEvent(taskParam->available);         // set the struct as available
     return;
@@ -168,76 +225,6 @@ void GetTime(ULARGE_INTEGER* time) {
     return;
 }
 
-// This function gets a file name, extension and key and creates an decrypted version with the new extension appended and removes the original file
-BOOL DecryptMyFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTKEY hKey) {
-    HANDLE hInputFile = INVALID_HANDLE_VALUE;                   // input file handler
-    HANDLE hOutputFile = INVALID_HANDLE_VALUE;                  // output file handler
-
-    BYTE buffer[CHUNK_SIZE];                                    // buffer to read from file, decrypt and write into file
-    DWORD bytesRead = 0, bytesWritten = 0;                      // number of bytes read/written return by CreateFile and CryptDecrypt
-    BOOL finalChunk = FALSE;                                    // flag to tell CryptDecrypt that it is the final chunk (smaller than the rest)
-    BOOL success = FALSE;                                       // flag to return success/failure
-
-    char outputFileName[MAX_PATH] = "";                         // output file name
-    const char* inputFileExt = strrchr(inputFileName, '.');     // this will point to the last '.' of inputFileName, where the crypted extension begins
-
-    // if the input file does not contain the crypted extension, skip the decryption
-    if (strcmp(inputFileExt, cryptoFileExt)) { goto cleanup; }
-    else {
-        // The outputFileName will be the inputFileName without the cryptoFileExt
-        strncpy(outputFileName, inputFileName, inputFileExt - inputFileName);
-
-        // Open the input file
-        hInputFile = CreateFileA(inputFileName, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hInputFile == INVALID_HANDLE_VALUE) {
-            printf("Error: Could not open input file. Error Code: %lu\n", GetLastError());
-            goto cleanup;
-        }
-
-        // Open the output file
-        hOutputFile = CreateFileA(outputFileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hOutputFile == INVALID_HANDLE_VALUE) {
-            printf("Error: Could not open output file. Error Code: %lu\n", GetLastError());
-            goto cleanup;
-        }
-
-        // Decrypt and write the file data in chunks
-        while (ReadFile(hInputFile, buffer, CHUNK_SIZE, &bytesRead, NULL) && bytesRead > 0) {
-            finalChunk = (bytesRead < CHUNK_SIZE);  // the final chunk will be smaller thant CHUNK_SIZE
-
-            // Decrypt the chunk
-            if (!CryptDecrypt(hKey, 0, finalChunk, 0, buffer, &bytesRead)) {
-                printf("Error: CryptDecrypt failed. Error Code: %lu\n", GetLastError());
-                goto cleanup;
-            }
-
-            // Write the decrypted chunk to the output file
-            if (!WriteFile(hOutputFile, buffer, bytesRead, &bytesWritten, NULL) || bytesWritten != bytesRead) {
-                printf("Error: WriteFile failed. Error Code: %lu\n", GetLastError());
-                goto cleanup;
-            }
-        }
-    }
-
-    // set success to true because the decryption went ok
-    success = TRUE;
-    //    printf("\rFile %s decrypted successfully.", inputFileName);
-    //    fflush(stdout);
-
-cleanup:
-    if (hInputFile != INVALID_HANDLE_VALUE) CloseHandle(hInputFile);
-    if (hOutputFile != INVALID_HANDLE_VALUE) CloseHandle(hOutputFile);
-
-    // Delete the input file only if the decryption was successful
-    if (success == TRUE) {
-        if (!DeleteFileA(inputFileName)) {
-            printf("Error: Could not delete input file. Error Code: %lu\n", GetLastError());
-        }
-    }
-
-    return success;
-}
-
 // given a target directory this will crawl into it and call DecryptMyFile for every file found on it and its subdirectories
 size_t DecryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* decryptedFileNumber, HCRYPTKEY hKey, TP_CALLBACK_ENVIRON* poolEnv, FileDecryptTask* taskPool) {
     WIN32_FIND_DATAA foundFileData;          // WIN32_FIND_DATA containing the file/directory info
@@ -336,12 +323,28 @@ size_t DecryptAllFiles(char* targetDir, const char* cryptoFileExt, size_t* decry
 // this will initialize the FileDecryptTask structs and call DecryptAllFiles. Finally it will securely close the thread handlers and finish up the decrypted files count
 size_t startDecryptionWithThreads(char* targetDir, const char* cryptoFileExt, size_t* decryptedFileNumber, HCRYPTKEY hKey, TP_CALLBACK_ENVIRON* poolEnv, PTP_CLEANUP_GROUP cleanupgroup) {
     size_t fileCount = 0;
-    FileDecryptTask taskPool[MAX_THREADS] = { 0 };
+    HCRYPTKEY* hKeys = NULL;
+    FileDecryptTask* taskPool = NULL;
+
+    // Allocate memory for the array of FileDecryptTask structs
+    taskPool = (FileDecryptTask*)malloc(MAX_THREADS * sizeof(FileDecryptTask));
+    if (taskPool == NULL) {
+        printf("Failed to allocate memory for FileEncryptTask struct array.\n");
+        return fileCount;
+    }
+
+    // Allocate memory for the array of HCRYPTKEY handles
+    hKeys = (HCRYPTKEY*)malloc(MAX_THREADS * sizeof(HCRYPTKEY));
+    if (hKeys == NULL) {
+        printf("Failed to allocate memory for HCRYPTKEY array.\n");
+        return fileCount;
+    }
 
     for (int i = 0; i < MAX_THREADS; i++) {
         taskPool[i].filePath[0] = '\0';                                 // initialize file path as empty
         taskPool[i].cryptoFileExt = cryptoFileExt;                      // the crypto extension
-        taskPool[i].hKey = hKey;                                        // the encryption key
+        CryptDuplicateKey(hKey, NULL, 0, &hKeys[i]);                    // duplicate the key for each thread - CryptDecrypt is not thread-safe according to MS
+        taskPool[i].hKey = hKeys[i];                                    // the encryption key for each thread will be a copy of the key
         taskPool[i].success = FALSE;                                    // initialize success as false, this will be used to count the total decrypted files
 
         // Setup an event to tell WaitForSingleObject when a struct is available
@@ -363,6 +366,17 @@ size_t startDecryptionWithThreads(char* targetDir, const char* cryptoFileExt, si
     for (int i = 0; i < MAX_THREADS; i++) {
         if (taskPool[i].success) { (*decryptedFileNumber)++; }
     }
+
+    // Cleanup the key copies
+    for (int i = 0; i < MAX_THREADS; i++) {
+        if (hKeys[i] != NULL) {
+            CryptDestroyKey(hKeys[i]);
+        }
+    }
+
+    // free allocated memory
+    free(hKeys);
+    free(taskPool);
 
     return fileCount;
 }

