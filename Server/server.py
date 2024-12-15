@@ -119,8 +119,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"POST data saved to file.")
 
 # Configure the server
-#HOST = "127.0.0.1"
-HOST = "192.168.1.146"
+HOST = "127.0.0.1"
 PORT = 80
 
 if __name__ == "__main__":
