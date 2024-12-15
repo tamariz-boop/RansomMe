@@ -127,7 +127,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="crypto.c" />
     <ClCompile Include="RansomMe.c" />
+    <ClCompile Include="threads.c" />
+    <ClCompile Include="uitls.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="RansomMe.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

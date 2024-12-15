@@ -18,5 +18,19 @@
     <ClCompile Include="Decryptor.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\RansomMe\crypto.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\RansomMe\threads.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\RansomMe\uitls.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\RansomMe\RansomMe.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

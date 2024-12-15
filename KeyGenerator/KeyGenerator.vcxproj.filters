@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Encryptor_nothreads.c">
+    <ClCompile Include="KeyGenerator.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
